@@ -1,0 +1,434 @@
+---
+title: "Checking the multi-mapping of GBA and GBAP1 in bulk short read data from LBD proejct (Regina previous files)"
+author: "Jonathan Brenton"
+date: "18/1/2022"
+output: 
+  bookdown::html_document2:
+    figure_caption: yes
+    code_folding: show
+    theme: paper
+    highlight: kate
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: false
+---
+
+# Intro
+
+## Aim
+
+The idea was to have a look at multi-mapping between GBA and GBAP1 as there is a discrepancy between long read data and the short read data found in GTEX. In GTEX there appears to be a fair amount of reads assigned to GBAP1 while in the long read data this doesn't seem to be the case. There appears to be less in the long read.
+
+I hope this is the right way around.
+
+So, this brought up the fact that in short read data due to the similarity of sequence between GBA and GBAP1, which may apply to a set of other pseudogenes with similar sequences to their closely related non-pseudo genes. Therefore, as an initial infesitgation we looked into short read data in previous control and then all samples from a PD/LBD sequencing project.
+
+# Bash/Nextflow Part
+## Trimming and adapter removal
+
+This was done using a fastp step in a nextflow pipeline. The fastp code and options are listed below.
+
+```{bash fastp, echo=T, eval=F}
+fastp --in1 ${reads[0]} \
+    --out1 ${sampleID}_trimmed_1.fastq.gz \
+    --in2 ${reads[1]} \
+    --out2 ${sampleID}_trimmed_2.fastq.gz \
+    --detect_adapter_for_pe \
+    --qualified_quality_phred 15 \
+    --unqualified_percent_limit 40 \
+    --n_base_limit 5 \
+    --length_required 36 \
+    --correction \
+    --overlap_len_require 30 \
+    --overlap_diff_limit 5 \
+    --overrepresentation_analysis \
+    --overrepresentation_sampling 20 \
+    --html ${sampleID}_fastp.html \
+    --json ${sampleID}_fastp.json \
+    --report_title '${sampleID}' \
+    --thread 16
+```
+
+## Changing alignment parameters to include multi-mapping
+
+Previously when aligning using STAR, we have removed all by singular mapping reads from the output BAM files. All multi-mapping reads are then sent into the "*_Unmapped.out.mate1" fasta files (which in the nextflow pipelines I have no been outputing currently). In the fasta files there is no information on mapping, just the read itself is output.
+
+So to change this STAR can allow you to keep multi-mapping reads in the main SAM/BAM file output as well as singularly mapped reads. So to do this the following options need to be changed:
+
+```{bash star options, echo=T, eval=F}
+--outSAMmultNmax -1
+
+--outFilterMultimapNmax 10 \
+```
+
+The max number of multi-mapped reads is limited by the following two options, the first declares the how many times a read can be multi-mapped before it is not included in the BAM file. Setting to -1 allows all mappings to be included and in essence turns this option off.
+
+The next flag "outFilterMultimapNmax" declares the "max number of multiple alignments allowed for a read: if exceeded, the read is considered unmapped". Again if it is unmapped it is either not included or sent to the unmapped fasta file where number of mappings is no longer included. This means that any read that multi-maps more than 10 times is unmapped, whereas previously we had this set to 1, ie anything above unique/single mapping was unmapped. 
+
+**Now in the row of the SAM/BAM file describing each read and its alignment, the "NH:i:[1-10]" column will now range from 1-10. This column lists the amount of multimapping for a particular read, with the number after i: being the number of mappings. Paired end reads are counted as one mapping but are listed in two separate rows as they being and end at different locations.**
+
+Another main option that also influences mapping is "--outFilterMismatchNoverReadLmax 0.04" which means that 4% of the length a read can mismatch it's reference and be considered matched.
+
+Another way to go about this is to output the unmapped reads by using the '--outSAMunmapped Within' flag/option but this was not included here.
+
+The below code gives the mapping options used for the GBA/GBAP1 run. The code is in '/media/data/Jon/multi_map_gba_emil/multi_map_search_dir/unmap_pipe.nf' on the DRI server to run STAR on the fastp output.
+
+NB: The "--outSAMtype BAM Unsorted" was changed from sorted to unsorted, as when running RSEQC the STAR sorting caused an error so samtools sorting still had to be run. So whether or not it will make a difference in this case, I've left it out here as I will run samtools sort and index after anyway.
+
+```{bash star full, echo=T, eval=F}
+ STAR --runThreadN 25 \
+--genomeDir $genome_dir \
+--readFilesIn ${reads[0]}, ${reads[1]} \
+--readFilesCommand zcat \
+--outFileNamePrefix ${sampleID}_mapped.BAM_ \
+--outSAMtype BAM Unsorted \  
+--outFilterType BySJout \
+--outFilterMultimapNmax 10 \
+--outFilterMismatchNmax 999 \
+--outFilterMismatchNoverReadLmax 0.04 \
+--alignIntronMin 25 \
+--alignIntronMax 1000000 \
+--alignMatesGapMax 1000000 \
+--alignSJoverhangMin 8 \
+--alignSJDBoverhangMin 3 \
+--outSAMmultNmax -1
+```
+
+## Sorting and Indexing using Samtools
+
+Rsamtools which will be used later in the pipeline requires BAM files to be sorted and indexed for searching.
+In the following nextflow script, "sam_sort_index.nf", the name of the read, everything before the addition of text and file extensions added by STAR, is extracted and then samtools sort is run (-m is a memory maximum per thread: "Approximately the maximum required memory per thread, specified either in bytes", specified in bytes here). The sorted files are then indexed using samtools as well.
+
+```{nextflow sam sort and index, echo=T, eval=F}
+process sam_sort_index {
+
+myDir = file("${projectDir}/output/Samtools")
+myDir.mkdir()
+
+publishDir "${projectDir}/output/Samtools", mode: 'copy', overwrite: true
+
+input:
+path(data)
+
+output:
+path("*.bai"), emit: bam_indexes
+path("*.bam"), emit: sorted_bams
+val(bam_dir), emit: bam_dir
+
+script:
+bam_dir="${projectDir}/output/Samtools"
+"""
+name=`echo "$data" | sed 's/_mapped.*//g'`
+samtools sort -m 1000000000 $data -o ./\${name}_Aligned.sortedBysamtools.out.bam
+
+samtools index ./\${name}_Aligned.sortedBysamtools.out.bam
+"""
+}
+```
+
+# R/Rstudio part
+## Using Rsamtools to extract reads within the gene and pseudogene locus and compare
+
+The following script was run and although arguments were entered manually ie (through Rscript on command line):
+```{R Rsamtools manually loading arguments, echo=T, eval=F}
+bam_dir<-"./multi_map_tests/"
+Gene_start<-155234452
+Gene_end<-155244699
+Gene_chromosome<-"chr1"
+Gene_strand<-"-"
+Pseudogene_start<-155213821
+Pseudogene_end<-155227574
+Pseudogene_chromosome<-"chr1"
+Pseudogene_strand<-"-"
+```
+
+
+But will be changed to nextflow, shown at the end of script.
+
+The arguments are loaded through option parser. Where the Bams are and the strand, start, end and chromosome/reference for the gene and pseudogene.
+
+```{R Rsamtools loading arguments, echo=T, eval=F}
+library(tidyverse)
+library(optparse)
+# library(Biostrings)
+library(magrittr)
+library(Rsamtools)
+library(GenomicRanges)
+library(IRanges)
+
+# Load Arguments ----
+
+arguments <- parse_args(OptionParser(), positional_arguments = 9)
+
+bam_dir<-arguments$args[1]
+
+Gene_start<-arguments$args[2]
+Gene_end<-arguments$args[3]
+Gene_strand<-arguments$args[4]
+Gene_chromosome<-arguments$args[5]
+
+Gene_start<-as.numeric(Gene_start)
+Gene_end<-as.numeric(Gene_end)
+Gene_strand<-as.character(Gene_strand)
+Gene_chromosome<-as.character(Gene_chromosome)
+
+Pseudogene_start<-arguments$args[6]
+Pseudogene_end<-arguments$args[7]
+Pseudogene_strand<-arguments$args[8]
+Pseudogene_chromosome<-arguments$args[9]
+
+Pseudogene_start<-as.numeric(Pseudogene_start)
+Pseudogene_end<-as.numeric(Pseudogene_end)
+Pseudogene_strand<-as.character(Pseudogene_strand)
+Pseudogene_chromosome<-as.character(Pseudogene_chromosome)
+```
+
+The next step was to create a data frame of the bams and their indexes. The Bams were listed with a list.files function and then their indexes were listed by just adding the '.bai' to the end of that string. Requires those indexes to be in the same folder. Then the dataframe is made with one row having both the bam and indexed bam in different columns for one sample.
+
+```{R Rsamtools make bam dataframe, echo=T, eval=F}
+
+# Create df/tibble of bam files and their indexes ----
+
+bam_list<-list.files(path = bam_dir, pattern = "*.bam$")
+bam_list<-file.path(bam_dir, bam_list)
+
+index_list<-c()
+count<-1
+for (i in 1:length(bam_list)) {
+  index_list[count]<-paste0(bam_list[i], ".bai")
+  count<-count+1
+} 
+
+bam_df<-tibble(bams=bam_list, indexes=index_list)
+```
+
+Next, two granges objects are made to search/filter the bam files in a moment.
+
+```{R Rsamtools make granges, echo=T, eval=F}
+
+# Make a GRange object of the Gene and Pseudogene ----
+
+gene_grange<-GRanges(seqnames = Gene_chromosome,
+                     ranges = IRanges(start = Gene_start, end = Gene_end))
+pseudogene_grange<-GRanges(seqnames = Pseudogene_chromosome,
+                           ranges = IRanges(start = Pseudogene_start, end = Pseudogene_end))
+
+# does an Irange for ref/seq, start and end only. doesn't seem to filter anything but, start, end, width. Don't need strand - had in before - if breaks put back
+```
+
+A results dataframe needs to be set up prior to looping through the bam file/indexes, so it can be populated later on. The descriptions are commented next to the values. The last two values are not included but could be included in the future if the locations of multi-mapped reads outside of the gene/pseudogene becomes important (would require other additions to code though/another loop for each read).
+
+```{R Rsamtools make results object, echo=T, eval=F}
+
+Results_df<-tibble(name="", # name of file/bam
+                   unique_gene_counts=NA, # how many unique/non-multimapping counts (any not just pairs) found within gene locus
+                   unique_pseudogene_counts=NA, # how many counts (any not just pairs) found within pseudogene locus
+                   multi_map_gene_counts=NA, # how many multimapping counts (any not just pairs) found within gene locus
+                   multi_map_pseudogene_counts=NA, # how many multimapping counts (any not just pairs) found within pseudogene locus
+                   gene_unique.vs.multi=NA, # ratio of: unique gene counts / multimapping gene counts
+                   pseudogene_unique.vs.multi=NA, # ratio of: unique pseudogene counts / multimapping pseudogene counts
+                   unique_gene_vs_pseudo=NA, # ratio of unique counts in gene vs unique counts in pseudo
+                   multi_gene_vs_pseudo=NA, # ratio of multimap counts in gene vs unique counts in pseudo
+                   multi_gene_in_pseudo.vs.gene_ratio=NA, # ratio of: multimapping reads within gene locus whose read names are also present in pseudogene reads / all multimapping gene counts
+                   multi_pseudo_in_gene.vs.pseudo_ratio=NA # ratio of: multimapping reads within pseudogene locus whose read names are also present in gene reads / all multimapping pseudogene counts
+ #                  multimap_gene_vs_other_ratio=NA, # ratio of read names of multimapping read within gene locus that map to any other location
+#                   multimap_pseudogene_vs_other_ratio=NA # ratio of read names of multimapping read within pseudogene locus that map to any other location
+                   )
+```
+
+Rather than just use read length to define the end of the read, some string wrangling was used to extract the length of the read from the CIGAR string. The length was conditional on it consuming the reference rather than the length of additions in the sequence itself (https://samtools.github.io/hts-specs/SAMv1.pdf - pg.6). 
+
+SAM consumes reference:
+M - match; alignment match (can be a sequence match or mismatch) 
+D - deletion
+N - Region skipped from reference
+= - sequence match
+X - sequence mismatch
+
+In other words we only want to know within the reference how far the sequence/read goes along the reference, we're not bothered about any internal changes in the read/sequence that are different to the reference. The below creates a function for use in the for loop.
+
+```{R Rsamtools cigar extract, echo=T, eval=F}
+
+#---- Define Cigar extaction function
+
+cig_extract_length<-function(x) {
+  cig_vec<-as.vector(unlist(str_extract_all(string = x, pattern = '[0-9]*[A-Z|=]')))
+  y<-cig_vec[which(grepl(x = cig_vec, pattern = "M|D|N|=|X"))]
+  z<-str_extract_all(string = y, pattern = '[0-9]+')
+  zz<-stringr::str_flatten(z, collapse = "+")
+  x2<-parse(text = zz)
+  eval(x2)
+}
+```
+
+At the start of the for loop, each row/sample in the BAM dataframe will be processed sequentially. Most functions below come from the Rsamtools packages. The setting up of the flag object, allows for the filtering of only paired end reads, that are properly paired, is on the minus strand and is the first read of the pair is the one selected. ONLY THE FIRST OF THE READ PAIR IS USED - SINCE IT CONVERYS STRAND INFORMATION. It could be possible to select both pairs and to look at fragments. It also allows certain other problems to be avoided - ie not passing quality controls. The isSecondaryAlignment is set to NA which means this filter is not applied, as it would filter for unique or multi-mapped reads either way. This allows Rsamtools to scan the second column of the SAM alignment row, the flag to select those reads that are on the minus strand for GBA.
+
+Then the ScanBamParam function is used, " scanBamWhat() " gives you an unfiltered output, ie all the columns of the SAM alignment row for each read. Adding the "NH" option to the tag parameter, means that this is output too from the search, allowing reads can be split between unique and multi-mapping later on. The "which" option allows you to select where in the genome you wish to filter, so in this case, the GBA locus. The which option will look for overlaps, so not a strict filter for only within the locus, which will be done later too. The flag object is added too. 
+
+The ScanBam function then searches the bam file with the parameters given to it. This will return a multi-list object with rows passing the above criteria.
+
+
+```{R Rsamtools scan bam, echo=T, eval=F}
+#---- For loop through data
+
+for (i in 1:dim(bam_df)[1]) {
+
+# Gene Counts/search ----
+
+bam_file<-BamFile(file = bam_df$bams[i], index = bam_df$indexes[i])
+
+  flag<-scanBamFlag(isPaired = T, isProperPair = T, isUnmappedQuery = F,  
+                    hasUnmappedMate = F, isMinusStrand = T, isMateMinusStrand = F, 
+                    isFirstMateRead = T, isSecondMateRead = F,
+                    isSecondaryAlignment = NA, isNotPassingQualityControls = F, isDuplicate = F)
+  p_G <- ScanBamParam(what = scanBamWhat(),
+                      tag = "NH", 
+                      which=gene_grange,
+                      flag = flag)
+filt_bam_gene <- scanBam(bam_file, param = p_G)
+# does an Irange for ref/seq, start and end only. 
+# doesn't seem to filter anything but, start, end, width
+```
+
+
+Next the list object is turned into a tibble/dataframe and the columns of interest are selected (just to make it a bit smaller).
+
+Since the NH/tag object is a separate list, it needs to converted separately and merged with the dataframe. 
+
+Then the strand of interest can be filtered for (as an extra precaution - although this is a redundant step).
+
+```{R Rsamtools scan bam filtering, echo=T, eval=F}
+
+filt_bam_gene_df<-as_tibble(filt_bam_gene[[1]][c("qname", "flag", "rname", "strand", "pos", "qwidth", "cigar")])
+NH<-as_tibble(filt_bam_gene[[1]]$tag)
+
+filt_bam_gene_df<-cbind(filt_bam_gene_df, NH)
+
+filt_bam_gene_df<-filt_bam_gene_df %>% filter(strand=="-")
+```
+
+Then to get the actual length of the read (not just the start position + supposed read length), the CIGAR string can be wrangled as stated above, so that reads with large gapped alignment that would lead them to start or end outside the locus of interest can be removed.
+
+The cig_extract length is looped over each row of the bam dataframe to make a vector, which is then added as another column.
+
+```{R Rsamtools get length with CIGAR, echo=T, eval=F}
+
+cig<-""
+count<-0
+for (i in filt_bam_gene_df$cigar) {
+  count<-count+1
+  cig[count]<-cig_extract_length(i)
+}
+cig<-as.numeric(cig)
+
+filt_bam_gene_df$actual_width<-cig
+```
+
+Next the bam dataframe is divided into two smaller dataframes, one for unique mapping and one for multimapping.
+
+Both are then filtered to make sure the start positions the reads are after the start of the gene locus, and the end of the read (start position + cigar extracted length) is smaller than the end of the gene locus.
+
+Then they are shoved back together again after labelling the rows to be either gene or pseudogene and their mapping type.
+
+```{R Rsamtools filtering, echo=T, eval=F}
+
+unique_map_gene_df<-filt_bam_gene_df %>% filter(NH==1)
+multi_map_gene_df<-filt_bam_gene_df %>% filter(NH>1)
+
+unique_map_gene_within_df<-unique_map_gene_df %>% filter(pos>=Gene_start & pos+actual_width<=Gene_end)
+unique_map_gene_within_df$Gene_or_Pseudogene<-"Gene"
+unique_map_gene_within_df$Mapping<-"Unique"
+
+multi_map_gene_within_df<-multi_map_gene_df %>% filter(pos>=Gene_start & pos+actual_width<=Gene_end)
+multi_map_gene_within_df$Gene_or_Pseudogene<-"Gene"
+multi_map_gene_within_df$Mapping<-"Multi"
+
+gene_searched_tibble<-rbind(unique_map_gene_within_df, multi_map_gene_within_df)
+```
+
+The identical steps are then performed for the pseudogene coordinates and information.
+
+```{R All pseudogene searching and filtering, echo=T, eval=F}
+# Pseudogene seach ----
+
+bam_file<-BamFile(file = bam_df$bams[i], index = bam_df$indexes[i])
+p_PG <- ScanBamParam(what = scanBamWhat(),
+                   tag = "NH",
+                   which=pseudogene_grange,
+                   flag=flag)
+
+filt_bam_pseudogene <- scanBam(bam_file, param = p_PG)
+
+filt_bam_pseudogene_df<-as_tibble(filt_bam_pseudogene[[1]][c("qname", "flag", "rname", "strand", "pos", "qwidth", "cigar")])
+NH<-as_tibble(filt_bam_pseudogene[[1]]$tag)
+
+filt_bam_pseudogene_df<-cbind(filt_bam_pseudogene_df, NH)
+
+filt_bam_pseudogene_df<-filt_bam_pseudogene_df %>% filter(strand=="-")
+
+cig<-""
+count<-0
+for (i in filt_bam_pseudogene_df$cigar) {
+  count<-count+1
+  cig[count]<-cig_extract_length(i)
+}
+cig<-as.numeric(cig)
+filt_bam_pseudogene_df$actual_width<-cig
+
+unique_map_pseudogene_df<-filt_bam_pseudogene_df %>% filter(NH==1)
+multi_map_pseudogene_df<-filt_bam_pseudogene_df %>% filter(NH>1)
+
+unique_map_pseudogene_within_df<-unique_map_pseudogene_df %>% filter(pos>=Pseudogene_start & pos+actual_width<=Pseudogene_end)
+unique_map_pseudogene_within_df$Gene_or_Pseudogene<-"Pseudogene"
+unique_map_pseudogene_within_df$Mapping<-"Unique"
+
+multi_map_pseudogene_within_df<-multi_map_pseudogene_df %>% filter(pos>=Pseudogene_start & pos+actual_width<=Pseudogene_end)
+multi_map_pseudogene_within_df$Gene_or_Pseudogene<-"Pseudogene"
+multi_map_pseudogene_within_df$Mapping<-"Multi"
+
+pseudogene_searched_tibble<-rbind(unique_map_pseudogene_within_df, multi_map_pseudogene_within_df)
+
+uniq_gene_in_pseudo<-length(unique_map_gene_within_df$qname[unique_map_gene_within_df$qname %in% unique_map_pseudogene_within_df$qname])
+uniq_pseudo_in_gene<-length(unique_map_pseudogene_within_df$qname[unique_map_pseudogene_within_df$qname %in% unique_map_gene_within_df$qname])
+
+uniq_gene_ratio<-uniq_gene_in_pseudo/length(unique_map_gene_within_df$qname)
+uniq_pseudogene_ratio<-uniq_pseudo_in_gene/length(unique_map_pseudogene_within_df$qname)
+```
+
+
+Next to determine ratios of which reads overlap between the gene and pseudogene, the "qname" column from pseudogene and gene dataframes are used to find the amount of times read names from multi-mapping reads are present in the other. Could be improved?
+
+Then ratios are created to see the amount of multi-mapping from the gene to pseudogene and vice versa as a fraction of total reads. These values as well as other values such as absolute amount of counts are used to populate the results dataframe. Then the loop repeats for the next bam/row in the bam file dataframe.
+
+```{R Make ratios/populate results, echo=T, eval=F}
+# Ratio of multi maps ----
+multi_gene_in_pseudo<-length(multi_map_gene_within_df$qname[multi_map_gene_within_df$qname %in% multi_map_pseudogene_within_df$qname])
+multi_pseudo_in_gene<-length(multi_map_pseudogene_within_df$qname[multi_map_pseudogene_within_df$qname %in% multi_map_gene_within_df$qname])
+
+multi_gene_ratio<-multi_gene_in_pseudo/length(multi_map_gene_within_df$qname)
+multi_pseudogene_ratio<-multi_pseudo_in_gene/length(multi_map_pseudogene_within_df$qname)
+
+
+name<-sub(x = bam_df$names[i], pattern = ".bam", replacement = "")
+
+Results_df[i,]  <- as.list(c(name,
+                   length(unique_map_gene_within_df$qname),
+                   length(unique_map_pseudogene_within_df$qname),
+                   length(multi_map_gene_within_df$qname),
+                   length(multi_map_pseudogene_within_df$qname),
+                   length(unique_map_gene_within_df$qname)/length(multi_map_gene_within_df$qname),
+                   length(unique_map_pseudogene_within_df$qname)/length(multi_map_pseudogene_within_df$qname),
+                   length(unique_map_gene_within_df$qname)/length(unique_map_pseudogene_within_df$qname),
+                   length(multi_map_gene_within_df$qname)/length(multi_map_pseudogene_within_df$qname),
+                   multi_gene_ratio,
+                   multi_pseudogene_ratio))
+                   }
+
+```
+
+Finally when the loop is finished the results dataframe is written into a csv file.
+```{R csv, echo=T, eval=F}
+
+write_csv(Results_df, "Multimapping_results.csv")
+```
