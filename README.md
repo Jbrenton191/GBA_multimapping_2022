@@ -1,6 +1,6 @@
 # GBA_multimapping_2022
 
-For description of code please download and open either the .html file or knit the RMD file. 
+For description of code please download and open either the .html file or knit the .Rmd file. 
 
 Results/output are viewable and able to download in the csv file.
 
