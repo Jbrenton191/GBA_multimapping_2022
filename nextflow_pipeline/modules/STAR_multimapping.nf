@@ -1,9 +1,9 @@
 process STAR_multimapping {
 
-myDir2 = file("${projectDir}/output/STAR/align/unmapped_rerun")
+myDir2 = file("${projectDir}/output/STAR/align")
 myDir2.mkdirs()
 
-publishDir "${projectDir}/output/STAR/align/unmapped_rerun", mode: 'copy', overwrite: true
+publishDir "${projectDir}/output/STAR/align", mode: 'copy', overwrite: true
 
   input:
   tuple val(sampleID), path(reads)
@@ -12,7 +12,7 @@ publishDir "${projectDir}/output/STAR/align/unmapped_rerun", mode: 'copy', overw
   output:
 	path("*SJ.out.tab"), emit: sj_tabs2
   	val(sj_loc), emit: sj_loc
-        path('*BAM_Aligned.sortedByCoord.out.bam'), emit: bams
+        path('*.bam'), emit: bams
 
         tuple val(sampleID), path('*toTranscriptome.out.bam'), optional:true, emit: bam_transcript
         tuple val(sampleID), path('*Aligned.unsort.out.bam'), optional:true, emit: bam_unsorted
@@ -28,7 +28,7 @@ publishDir "${projectDir}/output/STAR/align/unmapped_rerun", mode: 'copy', overw
   echo ${reads[0]}
   echo ${reads[1]}
 
-  STAR --runThreadN 25 \
+  STAR --runThreadN 7 \
 --genomeDir $genome_dir \
 --readFilesIn ${reads[0]}, ${reads[1]} \
 --readFilesCommand zcat \

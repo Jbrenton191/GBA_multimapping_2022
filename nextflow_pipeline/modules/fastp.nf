@@ -41,7 +41,7 @@ process fastp {
     --html ${sampleID}_fastp.html \
     --json ${sampleID}_fastp.json \
     --report_title '${sampleID}' \
-    --thread 16
+    --thread 7
     """
 
 }

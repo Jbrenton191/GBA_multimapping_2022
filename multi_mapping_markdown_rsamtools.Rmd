@@ -20,8 +20,6 @@ output:
 
 The idea was to have a look at multi-mapping between GBA and GBAP1 as there is a discrepancy between long read data and the short read data found in GTEX. In GTEX there appears to be a fair amount of reads assigned to GBAP1 while in the long read data this doesn't seem to be the case. There appears to be less in the long read.
 
-I hope this is the right way around.
-
 So, this brought up the fact that in short read data due to the similarity of sequence between GBA and GBAP1, which may apply to a set of other pseudogenes with similar sequences to their closely related non-pseudo genes. Therefore, as an initial infesitgation we looked into short read data in previous control and then all samples from a PD/LBD sequencing project.
 
 # Bash/Nextflow Part
@@ -95,12 +93,12 @@ NB: The "--outSAMtype BAM Unsorted" was changed from sorted to unsorted, as when
 --outSAMmultNmax -1
 ```
 
-## Sorting and Indexing using Samtools
+## Sorting and Indexing using Samtools within nextflow
 
 Rsamtools which will be used later in the pipeline requires BAM files to be sorted and indexed for searching.
 In the following nextflow script, "sam_sort_index.nf", the name of the read, everything before the addition of text and file extensions added by STAR, is extracted and then samtools sort is run (-m is a memory maximum per thread: "Approximately the maximum required memory per thread, specified either in bytes", specified in bytes here). The sorted files are then indexed using samtools as well.
 
-```{nextflow sam sort and index, echo=T, eval=F}
+```{bash sam sort and index, echo=T, eval=F}
 process sam_sort_index {
 
 myDir = file("${projectDir}/output/Samtools")
@@ -131,8 +129,8 @@ samtools index ./\${name}_Aligned.sortedBysamtools.out.bam
 ## Using Rsamtools to extract reads within the gene and pseudogene locus and compare
 
 The following script was run and although arguments were entered manually ie (through Rscript on command line):
-```{R Rsamtools manually loading arguments, echo=T, eval=F}
-bam_dir<-"./multi_map_tests/"
+```{r Rsamtools manually loading arguments, echo=T, eval=F}
+bam_dir<-"~/GBA_multimapping_2022/nextflow_pipeline/output/Samtools/"
 Gene_start<-155234452
 Gene_end<-155244699
 Gene_chromosome<-"chr1"
@@ -144,11 +142,7 @@ Pseudogene_strand<-"-"
 ```
 
 
-But will be changed to nextflow, shown at the end of script.
-
-The arguments are loaded through option parser. Where the Bams are and the strand, start, end and chromosome/reference for the gene and pseudogene.
-
-```{R Rsamtools loading arguments, echo=T, eval=F}
+```{r Rsamtools loading arguments, echo=T, eval=F}
 library(tidyverse)
 library(optparse)
 # library(Biostrings)
@@ -158,35 +152,35 @@ library(GenomicRanges)
 library(IRanges)
 
 # Load Arguments ----
-
-arguments <- parse_args(OptionParser(), positional_arguments = 9)
-
-bam_dir<-arguments$args[1]
-
-Gene_start<-arguments$args[2]
-Gene_end<-arguments$args[3]
-Gene_strand<-arguments$args[4]
-Gene_chromosome<-arguments$args[5]
-
-Gene_start<-as.numeric(Gene_start)
-Gene_end<-as.numeric(Gene_end)
-Gene_strand<-as.character(Gene_strand)
-Gene_chromosome<-as.character(Gene_chromosome)
-
-Pseudogene_start<-arguments$args[6]
-Pseudogene_end<-arguments$args[7]
-Pseudogene_strand<-arguments$args[8]
-Pseudogene_chromosome<-arguments$args[9]
-
-Pseudogene_start<-as.numeric(Pseudogene_start)
-Pseudogene_end<-as.numeric(Pseudogene_end)
-Pseudogene_strand<-as.character(Pseudogene_strand)
-Pseudogene_chromosome<-as.character(Pseudogene_chromosome)
+# 
+# arguments <- parse_args(OptionParser(), positional_arguments = 9)
+# 
+# bam_dir<-arguments$args[1]
+# 
+# Gene_start<-arguments$args[2]
+# Gene_end<-arguments$args[3]
+# Gene_strand<-arguments$args[4]
+# Gene_chromosome<-arguments$args[5]
+# 
+# Gene_start<-as.numeric(Gene_start)
+# Gene_end<-as.numeric(Gene_end)
+# Gene_strand<-as.character(Gene_strand)
+# Gene_chromosome<-as.character(Gene_chromosome)
+# 
+# Pseudogene_start<-arguments$args[6]
+# Pseudogene_end<-arguments$args[7]
+# Pseudogene_strand<-arguments$args[8]
+# Pseudogene_chromosome<-arguments$args[9]
+# 
+# Pseudogene_start<-as.numeric(Pseudogene_start)
+# Pseudogene_end<-as.numeric(Pseudogene_end)
+# Pseudogene_strand<-as.character(Pseudogene_strand)
+# Pseudogene_chromosome<-as.character(Pseudogene_chromosome)
 ```
 
 The next step was to create a data frame of the bams and their indexes. The Bams were listed with a list.files function and then their indexes were listed by just adding the '.bai' to the end of that string. Requires those indexes to be in the same folder. Then the dataframe is made with one row having both the bam and indexed bam in different columns for one sample.
 
-```{R Rsamtools make bam dataframe, echo=T, eval=F}
+```{r Rsamtools make bam dataframe, echo=T, eval=F}
 
 # Create df/tibble of bam files and their indexes ----
 
@@ -205,7 +199,7 @@ bam_df<-tibble(bams=bam_list, indexes=index_list)
 
 Next, two granges objects are made to search/filter the bam files in a moment.
 
-```{R Rsamtools make granges, echo=T, eval=F}
+```{r Rsamtools make granges, echo=T, eval=F}
 
 # Make a GRange object of the Gene and Pseudogene ----
 
@@ -219,7 +213,7 @@ pseudogene_grange<-GRanges(seqnames = Pseudogene_chromosome,
 
 A results dataframe needs to be set up prior to looping through the bam file/indexes, so it can be populated later on. The descriptions are commented next to the values. The last two values are not included but could be included in the future if the locations of multi-mapped reads outside of the gene/pseudogene becomes important (would require other additions to code though/another loop for each read).
 
-```{R Rsamtools make results object, echo=T, eval=F}
+```{r Rsamtools make results object, echo=T, eval=F}
 
 Results_df<-tibble(name="", # name of file/bam
                    unique_gene_counts=NA, # how many unique/non-multimapping counts (any not just pairs) found within gene locus
@@ -248,7 +242,7 @@ X - sequence mismatch
 
 In other words we only want to know within the reference how far the sequence/read goes along the reference, we're not bothered about any internal changes in the read/sequence that are different to the reference. The below creates a function for use in the for loop.
 
-```{R Rsamtools cigar extract, echo=T, eval=F}
+```{r Rsamtools cigar extract, echo=T, eval=F}
 
 #---- Define Cigar extaction function
 
@@ -269,7 +263,7 @@ Then the ScanBamParam function is used, " scanBamWhat() " gives you an unfiltere
 The ScanBam function then searches the bam file with the parameters given to it. This will return a multi-list object with rows passing the above criteria.
 
 
-```{R Rsamtools scan bam, echo=T, eval=F}
+```{r Rsamtools scan bam, echo=T, eval=F}
 #---- For loop through data
 
 for (i in 1:dim(bam_df)[1]) {
@@ -298,7 +292,7 @@ Since the NH/tag object is a separate list, it needs to converted separately and
 
 Then the strand of interest can be filtered for (as an extra precaution - although this is a redundant step).
 
-```{R Rsamtools scan bam filtering, echo=T, eval=F}
+```{r Rsamtools scan bam filtering, echo=T, eval=F}
 
 filt_bam_gene_df<-as_tibble(filt_bam_gene[[1]][c("qname", "flag", "rname", "strand", "pos", "qwidth", "cigar")])
 NH<-as_tibble(filt_bam_gene[[1]]$tag)
@@ -312,13 +306,13 @@ Then to get the actual length of the read (not just the start position + suppose
 
 The cig_extract length is looped over each row of the bam dataframe to make a vector, which is then added as another column.
 
-```{R Rsamtools get length with CIGAR, echo=T, eval=F}
+```{r Rsamtools get length with CIGAR, echo=T, eval=F}
 
 cig<-""
 count<-0
-for (i in filt_bam_gene_df$cigar) {
+for (j in filt_bam_gene_df$cigar) {
   count<-count+1
-  cig[count]<-cig_extract_length(i)
+  cig[count]<-cig_extract_length(j)
 }
 cig<-as.numeric(cig)
 
@@ -331,7 +325,7 @@ Both are then filtered to make sure the start positions the reads are after the 
 
 Then they are shoved back together again after labelling the rows to be either gene or pseudogene and their mapping type.
 
-```{R Rsamtools filtering, echo=T, eval=F}
+```{r Rsamtools filtering, echo=T, eval=F}
 
 unique_map_gene_df<-filt_bam_gene_df %>% filter(NH==1)
 multi_map_gene_df<-filt_bam_gene_df %>% filter(NH>1)
@@ -349,7 +343,7 @@ gene_searched_tibble<-rbind(unique_map_gene_within_df, multi_map_gene_within_df)
 
 The identical steps are then performed for the pseudogene coordinates and information.
 
-```{R All pseudogene searching and filtering, echo=T, eval=F}
+```{r All pseudogene searching and filtering, echo=T, eval=F}
 # Pseudogene seach ----
 
 bam_file<-BamFile(file = bam_df$bams[i], index = bam_df$indexes[i])
@@ -369,9 +363,9 @@ filt_bam_pseudogene_df<-filt_bam_pseudogene_df %>% filter(strand=="-")
 
 cig<-""
 count<-0
-for (i in filt_bam_pseudogene_df$cigar) {
+for (j in filt_bam_pseudogene_df$cigar) {
   count<-count+1
-  cig[count]<-cig_extract_length(i)
+  cig[count]<-cig_extract_length(j)
 }
 cig<-as.numeric(cig)
 filt_bam_pseudogene_df$actual_width<-cig
@@ -401,7 +395,7 @@ Next to determine ratios of which reads overlap between the gene and pseudogene,
 
 Then ratios are created to see the amount of multi-mapping from the gene to pseudogene and vice versa as a fraction of total reads. These values as well as other values such as absolute amount of counts are used to populate the results dataframe. Then the loop repeats for the next bam/row in the bam file dataframe.
 
-```{R Make ratios/populate results, echo=T, eval=F}
+```{r Make ratios/populate results, echo=T, eval=F}
 # Ratio of multi maps ----
 multi_gene_in_pseudo<-length(multi_map_gene_within_df$qname[multi_map_gene_within_df$qname %in% multi_map_pseudogene_within_df$qname])
 multi_pseudo_in_gene<-length(multi_map_pseudogene_within_df$qname[multi_map_pseudogene_within_df$qname %in% multi_map_gene_within_df$qname])
@@ -410,7 +404,7 @@ multi_gene_ratio<-multi_gene_in_pseudo/length(multi_map_gene_within_df$qname)
 multi_pseudogene_ratio<-multi_pseudo_in_gene/length(multi_map_pseudogene_within_df$qname)
 
 
-name<-sub(x = bam_df$names[i], pattern = ".bam", replacement = "")
+name<-sub(x = bam_df$bams[i], pattern = ".bam", replacement = "")
 
 Results_df[i,]  <- as.list(c(name,
                    length(unique_map_gene_within_df$qname),
